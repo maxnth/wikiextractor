@@ -115,6 +115,9 @@ Each file will contains several documents in this [document format](http://media
       -v, --version         print program version
 
 
+## Examples:
+    python2 WikiExtractor.py dewiki-20181101-pages-articles.xml.bz2 --raw-text
+
 Saving templates to a file will speed up performing extraction the next time,
 assuming template definitions have not changed.
 
