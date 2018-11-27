@@ -33,8 +33,8 @@ The script is invoked with a Wikipedia dump file as an argument.
 The output is stored in several files of similar size in a given directory.
 Each file will contains several documents in this [document format](http://medialab.di.unipi.it/wiki/Document_Format).
 
-    usage: WikiExtractor.py [-h] [-o OUTPUT] [-b n[KMG]] [-c] [--json] [--html]
-                            [-l] [-s] [--lists] [-ns ns1,ns2]
+    usage: WikiExtractor.py [-h] [-o OUTPUT] [-b n[KMG]] [-c] [--json] [--raw_text] 
+                            [--html] [-l] [-s] [--lists] [-ns ns1,ns2]
                             [--templates TEMPLATES] [--no-templates] [-r]
                             [--min_text_length MIN_TEXT_LENGTH]
                             [--filter_disambig_pages] [-it abbr,b,big]
@@ -56,6 +56,9 @@ Each file will contains several documents in this [document format](http://media
     the following structure
 
         {"id": "", "revid": "", "url":"", "title": "", "text": "..."}
+        
+    If the program is invoked with the --raw_text flag, then each file will
+    contain exactly one wikipedia article formatted in raw text
 
     Template expansion requires preprocesssng first the whole dump and
     collecting template definitions.
@@ -76,6 +79,7 @@ Each file will contains several documents in this [document format](http://media
                             maximum bytes per output file (default 1M)
       -c, --compress        compress output files using bzip
       --json                write output in json format instead of the default one
+      --raw_text            write outpunt in raw text format instead of the default one
 
     Processing:
       --html                produce HTML output, subsumes --links
