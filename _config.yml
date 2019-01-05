@@ -1,0 +1,8 @@
+title: Wikiextractor
+description: A tool for extracting plain text from Wikipedia dumps
+google_analytics: 
+show_downloads: true
+theme: jekyll-theme-hacker
+
+gems:
+  - jekyll-mentions
