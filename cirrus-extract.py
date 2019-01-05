@@ -28,13 +28,14 @@ Extracts and cleans text from a Wikipedia Cirrus dump and stores output in a
 number of files of similar size in a given directory.
 Each file will contain several documents in the format:
 
-	<doc id="" url="" title="">
-        ...
-        </doc>
+    <doc id="" url="" title="">
+    ...
+    </doc>
 
 """
 
-import sys, os.path, time
+import sys
+import os.path
 import re
 import json
 import argparse
@@ -48,6 +49,7 @@ version = '1.00'
 urlbase = 'http://it.wikipedia.org/'
 
 # ----------------------------------------------------------------------
+
 
 class NextFile(object):
     """
@@ -77,6 +79,7 @@ class NextFile(object):
 
     def _filepath(self):
         return '%s/wiki_%02d' % (self._dirname(), self.file_index)
+
 
 class OutputSplitter(object):
     """
@@ -115,6 +118,7 @@ class OutputSplitter(object):
 
 # ----------------------------------------------------------------------
 
+
 class Extractor(object):
 
     def extract(self, out):
@@ -135,6 +139,7 @@ class Extractor(object):
             out.write(line.encode('utf-8'))
             out.write('\n')
         out.write(footer)
+
 
 def process_dump(input_file, out_file, file_size, file_compress):
     """
@@ -182,8 +187,10 @@ def process_dump(input_file, out_file, file_size, file_compress):
 
 # ----------------------------------------------------------------------
 
+
 # Minimum size of output files
 minFileSize = 200 * 1024
+
 
 def main():
     parser = argparse.ArgumentParser(prog=os.path.basename(sys.argv[0]),
