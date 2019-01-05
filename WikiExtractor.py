@@ -17,6 +17,7 @@
 #   orangain (orangain@gmail.com)
 #   Seth Cleveland (scleveland@turnitin.com)
 #   Bren Barn
+#   Maximilian Nöth (maximilian.noeth@protonmail.com)
 #
 # =============================================================================
 #  Copyright (c) 2011-2017. Giuseppe Attardi (attardi@di.unipi.it).
@@ -54,54 +55,28 @@ collecting template definitions.
 
 """
 
-from __future__ import unicode_literals, division
-
 import sys
 import argparse
 import bz2
 import codecs
-import cgi
+import html
 import fileinput
 import logging
 import os.path
-import re  # TODO use regex when it will be standard
+import re
 import time
 import json
+import queue
 from io import StringIO
-from multiprocessing import Queue, Process, Value, cpu_count
+from multiprocessing import Queue, Process, Value, cpu_count, Event
 from timeit import default_timer
 import os
 
-
-
-PY2 = sys.version_info[0] == 2
-# Python 2.7 compatibiity
-if PY2:
-    from urllib import quote
-    from htmlentitydefs import name2codepoint
-    from itertools import izip as zip, izip_longest as zip_longest
-    # python2 unicode fix (not ideal!!!)
-    reload(sys)
-    sys.setdefaultencoding('utf-8')
-    range = xrange  # Use Python 3 equivalent
-    chr = unichr    # Use Python 3 equivalent
-    text_type = unicode
-
-    class SimpleNamespace(object):
-        def __init__ (self, **kwargs):
-            self.__dict__.update(kwargs)
-        def __repr__ (self):
-            keys = sorted(self.__dict__)
-            items = ("{}={!r}".format(k, self.__dict__[k]) for k in keys)
-            return "{}({})".format(type(self).__name__, ", ".join(items))
-        def __eq__ (self, other):
-            return self.__dict__ == other.__dict__
-else:
-    from urllib.parse import quote
-    from html.entities import name2codepoint
-    from itertools import zip_longest
-    from types import SimpleNamespace
-    text_type = str
+from urllib.parse import quote
+from html.entities import name2codepoint
+from itertools import zip_longest
+from types import SimpleNamespace
+text_type = str
 
 
 # ===========================================================================
@@ -116,18 +91,18 @@ options = SimpleNamespace(
     ##
     # Defined in <siteinfo>
     # We include as default Template, when loading external template file.
-    knownNamespaces = {'Template': 10},
+    knownNamespaces={'Template': 10},
 
     ##
     # The namespace used for template definitions
     # It is the name associated with namespace key=10 in the siteinfo header.
-    templateNamespace = '',
-    templatePrefix = '',
+    templateNamespace='',
+    templatePrefix='',
 
     ##
     # The namespace used for module definitions
     # It is the name associated with namespace key=828 in the siteinfo header.
-    moduleNamespace = '',
+    moduleNamespace='',
 
     ##
     # Recognize only these namespaces in links
@@ -135,34 +110,34 @@ options = SimpleNamespace(
     # wiktionary: Wiki dictionary
     # wikt: shortcut for Wiktionary
     #
-    acceptedNamespaces = ['w', 'wiktionary', 'wikt'],
+    acceptedNamespaces=['w', 'wiktionary', 'wikt'],
 
     # This is obtained from <siteinfo>
-    urlbase = '',
+    urlbase='',
 
     ##
     # Filter disambiguation pages
-    filter_disambig_pages = False,
+    filter_disambig_pages=False,
 
     ##
     # Drop tables from the article
-    keep_tables = False,
+    keep_tables=False,
 
     ##
     # Whether to preserve links in output
-    keepLinks = False,
+    keepLinks=False,
 
     ##
     # Whether to preserve section titles
-    keepSections = True,
+    keepSections=True,
 
     ##
     # Whether to preserve lists
-    keepLists = False,
+    keepLists=False,
 
     ##
     # Whether to output HTML instead of text
-    toHTML = False,
+    toHTML=False,
 
     ##
     # Whether to write raw text (article per file) instead of the xml-like default output format
@@ -171,41 +146,41 @@ options = SimpleNamespace(
 
     ##
     # Whether to write json instead of the xml-like default output format
-    write_json = False,
+    write_json=False,
 
     #
     # Output directory
-    outputDir = 'output',
+    outputDir='output',
 
 
     ##
     # Whether to expand templates
-    expand_templates = True,
+    expand_templates=True,
 
     ##
     ## Whether to escape doc content
-    escape_doc = False,
+    escape_doc=False,
 
     ##
     # Print the wikipedia article revision
-    print_revision = False,
+    print_revision=False,
 
     ##
     # Minimum expanded text length required to print document
-    min_text_length = 0,
+    min_text_length=0,
 
     # Shared objects holding templates, redirects and cache
-    templates = {},
-    redirects = {},
+    templates={},
+    redirects={},
     # cache of parser templates
     # FIXME: sharing this with a Manager slows down.
-    templateCache = {},
+    templateCache={},
 
     # Elements to ignore/discard
 
-    ignored_tag_patterns = [],
+    ignored_tag_patterns=list(),
 
-    discardElements = [
+    discardElements=[
         'gallery', 'timeline', 'noinclude', 'pre',
         'table', 'tr', 'td', 'th', 'caption', 'div',
         'form', 'input', 'select', 'option', 'textarea',
@@ -217,14 +192,16 @@ options = SimpleNamespace(
 
 ##
 # Keys for Template and Module namespaces
-templateKeys = set(['10', '828'])
+templateKeys = {'10', '828'}
 
 ##
 # Regex for identifying disambig pages
-filter_disambig_page_pattern = re.compile("{{disambig(uation)?(\|[^}]*)?}}")
+filter_disambig_page_pattern = re.compile("{{disambig(uation)?(\|[^}]*)?}}|__DISAMBIG__")
 
 ##
 # page filtering logic -- remove templates, undesired xml namespaces, and disambiguation pages
+
+
 def keepPage(ns, page):
     if ns != '0':               # Aritcle
         return False
@@ -414,7 +391,6 @@ class Template(list):
         tpl.append(TemplateText(body[start:]))  # leftover
         return tpl
 
-
     def subst(self, params, extractor, depth=0):
         # We perform parameter substitutions recursively.
         # We also limit the maximum number of iterations to avoid too long or
@@ -444,7 +420,6 @@ class Template(list):
 
 class TemplateText(text_type):
     """Fixed text of template"""
-
 
     def subst(self, params, extractor, depth):
         return self
@@ -511,14 +486,11 @@ class Frame(object):
         self.prev = prev
         self.depth = prev.depth + 1 if prev else 0
 
-
     def push(self, title, args):
         return Frame(title, args, self)
 
-
     def pop(self):
         return self.prev
-
 
     def __str__(self):
         res = ''
@@ -531,7 +503,9 @@ class Frame(object):
 
 # ======================================================================
 
+
 substWords = 'subst:|safesubst:'
+
 
 class Extractor(object):
     """
@@ -573,15 +547,16 @@ class Extractor(object):
 
             output_filename = os.getcwd()+os.sep+options.outputDir+os.sep+parent_dir+os.sep+title+'.txt'
 
-            if (os.path.exists(output_filename)): # if file exist add id front of the filename
-                output_filename = os.getcwd() + os.sep + options.outputDir + os.sep + parent_dir + os.sep +self.id+'_'+title + '.txt'
+            # Add article ID as prefix to the file name if necessary
+            if os.path.exists(output_filename):
+                output_filename = os.getcwd() + os.sep + options.outputDir + os.sep + parent_dir + os.sep + self.id+'_'\
+                                  + title + '.txt'
 
-            if (not os.path.exists(os.path.dirname(output_filename))):
+            if not os.path.exists(os.path.dirname(output_filename)):
                 os.makedirs(os.path.dirname(output_filename))
 
-            with open(output_filename,'w+') as output_file:
+            with open(output_filename, 'w+') as output_file:
                 for line in text:
-                    line = line.encode('utf-8')
                     output_file.write(line)
                     output_file.write('\n')
 
@@ -677,7 +652,6 @@ class Extractor(object):
         if sum(len(line) for line in text) < options.min_text_length:
             return
 
-
         self.write_output(out, text)
 
         errs = (self.template_title_errs,
@@ -687,7 +661,6 @@ class Extractor(object):
         if any(errs):
             logging.warn("Template errors in article '%s' (%s): title(%d) recursion(%d, %d, %d)",
                          self.title, self.id, *errs)
-
 
     def transform(self, wikitext):
         """
@@ -704,7 +677,6 @@ class Extractor(object):
         res += self.transform1(wikitext[cur:])
         return res
 
-
     def transform1(self, text):
         """Transform text not containing <nowiki>"""
         if options.expand_templates:
@@ -714,7 +686,6 @@ class Extractor(object):
         else:
             # Drop transclusions (template, parser functions)
             return dropNested(text, r'{{', r'}}')
-
 
     def wiki2text(self, text):
         #
@@ -770,7 +741,6 @@ class Extractor(object):
             cur = m.end()
         text = res + unescape(text[cur:])
         return text
-
 
     def clean(self, text):
         """
@@ -834,19 +804,18 @@ class Extractor(object):
             text = text.replace('|-', '')
             text = text.replace('|', '')
         if options.toHTML:
-            text = cgi.escape(text)
+            text = html.escape(text)
         return text
 
-
-    # ----------------------------------------------------------------------
-    # Expand templates
+    ####################
+    # Expand templates #
+    ####################
 
     maxTemplateRecursionLevels = 30
     maxParameterRecursionLevels = 10
 
     # check for template beginning
     reOpen = re.compile('(?<!{){{(?!{)', re.DOTALL)
-
 
     def expand(self, wikitext):
         """
@@ -887,7 +856,6 @@ class Extractor(object):
         res += wikitext[cur:]
         # logging.debug('%*sexpand> %s', self.frame.depth, '', res)
         return res
-
 
     def templateParams(self, parameters):
         """
@@ -956,7 +924,6 @@ class Extractor(object):
                 templateParams[str(unnamedParameterCounter)] = param
         # logging.debug('%*stemplateParams> %s', self.frame.length, '', '|'.join(templateParams.values()))
         return templateParams
-
 
     def expandTemplate(self, body):
         """Expands template invocation.
@@ -1535,6 +1502,7 @@ def roman_main(args):
     return toRoman(num, smallRomans)
 
 # ----------------------------------------------------------------------
+
 
 modules = {
     'convert': {
@@ -2760,7 +2728,8 @@ class OutputSplitter(object):
 
 tagRE = re.compile(r'(.*?)<(/?\w+)[^>]*?>(?:([^<]*)(<.*?>)?)?')
 #                    1     2               3      4
-keyRE = re.compile(r'key="(\d*)"')
+keyRE = re.compile(r'key="([+-]?)(\d*)"')
+
 
 def load_templates(file, output_file=None):
     """
@@ -2871,6 +2840,14 @@ def pages_from(input):
             page = []
 
 
+def try_put_until(event, q, value):
+    while not event.is_set():
+        try:
+            return q.put(value, False, 1)
+        except queue.Full:
+            pass
+
+
 def process_dump(input_file, template_file, out_file, file_size, file_compress,
                  process_count):
     """
@@ -2903,7 +2880,7 @@ def process_dump(input_file, template_file, out_file, file_size, file_compress,
         elif tag == 'namespace':
             mk = keyRE.search(line)
             if mk:
-                nsid = mk.group(1)
+                nsid = ''.join(mk.groups())
             else:
                 nsid = ''
             options.knownNamespaces[m.group(3)] = nsid
@@ -2960,10 +2937,12 @@ def process_dump(input_file, template_file, out_file, file_size, file_compress,
     max_spool_length = 10000
     spool_length = Value('i', 0, lock=False)
 
+    broken_pipe_event = Event()
+
     # reduce job that sorts and prints output
     reduce = Process(target=reduce_process,
                      args=(options, output_queue, spool_length,
-                           out_file, file_size, file_compress))
+                           out_file, file_size, file_compress, broken_pipe_event))
     reduce.start()
 
     # initialize jobs queue
@@ -2974,43 +2953,48 @@ def process_dump(input_file, template_file, out_file, file_size, file_compress,
     workers = []
     for i in range(worker_count):
         extractor = Process(target=extract_process,
-                            args=(options, i, jobs_queue, output_queue))
+                            args=(options, i, jobs_queue, output_queue, broken_pipe_event))
         extractor.daemon = True  # only live while parent process lives
         extractor.start()
         workers.append(extractor)
 
     # Mapper process
-    page_num = 0
-    for page_data in pages_from(input):
-        id, revid, title, ns, page = page_data
-        if keepPage(ns, page):
-            # slow down
-            delay = 0
-            if spool_length.value > max_spool_length:
-                # reduce to 10%
-                while spool_length.value > max_spool_length/10:
-                    time.sleep(10)
-                    delay += 10
-            if delay:
-                logging.info('Delay %ds', delay)
-            job = (id, revid, title, page, page_num)
-            jobs_queue.put(job) # goes to any available extract_process
-            page_num += 1
-        page = None             # free memory
+    try:
+        page_num = 0
+        for page_data in pages_from(input):
+            if broken_pipe_event.is_set():
+                break
+            id, revid, title, ns, page = page_data
+            if keepPage(ns, page):
+                # slow down
+                delay = 0
+                if spool_length.value > max_spool_length:
+                    # reduce to 10%
+                    while spool_length.value > max_spool_length / 10:
+                        time.sleep(10)
+                        delay += 10
+                if delay:
+                    logging.info('Delay %ds', delay)
+                job = (id, revid, title, page, page_num)
+                # TODO if pipe is closed
+                try_put_until(broken_pipe_event, jobs_queue, job)  # goes to any available extract_process
+                page_num += 1
+            page = None  # free memory
 
-    input.close()
+        input.close()
 
-    # signal termination
-    for _ in workers:
-        jobs_queue.put(None)
+    except KeyboardInterrupt:
+        logging.warning("Exiting due interrupt")
+
     # wait for workers to terminate
     for w in workers:
         w.join()
 
-    # signal end of work to reduce process
-    output_queue.put(None)
-    # wait for it to finish
-    reduce.join()
+    if reduce.is_alive():
+        # signal end of work to reduce process
+        output_queue.put(None)
+        # wait for reduce process to finish
+        reduce.join()
 
     extract_duration = default_timer() - extract_start
     extract_rate = page_num / extract_duration
@@ -3022,7 +3006,7 @@ def process_dump(input_file, template_file, out_file, file_size, file_compress,
 # Multiprocess support
 
 
-def extract_process(opts, i, jobs_queue, output_queue):
+def extract_process(opts, i, jobs_queue, output_queue, broken_pipe_event):
     """Pull tuples of raw page content, do CPU/regex-heavy fixup, push finished text
     :param i: process id.
     :param jobs_queue: where to get jobs.
@@ -3036,32 +3020,42 @@ def extract_process(opts, i, jobs_queue, output_queue):
 
     out = StringIO()                 # memory buffer
 
+    try:
+        while not broken_pipe_event.is_set():
+            job = jobs_queue.get()  # job is (id, title, page, page_num)
+            if job:
+                id, revid, title, page, page_num = job
+                try:
+                    e = Extractor(*job[:4]) # (id, revid, title, page)
+                    page = None              # free memory
+                    e.extract(out)
+                    text = out.getvalue()
+                except Exception:
+                    text = ''
+                    logging.exception('Processing page: %s %s', id, title)
 
-    while True:
-        job = jobs_queue.get()  # job is (id, title, page, page_num)
-        if job:
-            id, revid, title, page, page_num = job
-            try:
-                e = Extractor(*job[:4]) # (id, revid, title, page)
-                page = None              # free memory
-                e.extract(out)
-                text = out.getvalue()
-            except:
-                text = ''
-                logging.exception('Processing page: %s %s', id, title)
+                try_put_until(broken_pipe_event, output_queue, (page_num, text))
+                out.truncate(0)
+                out.seek(0)
+            else:
+                logging.debug('Quit extractor')
+                break
+    except KeyboardInterrupt:
+        logging.info('Aborting worker %d', i)
+        output_queue.cancel_join_thread()
+        jobs_queue.cancel_join_thread()
 
-            output_queue.put((page_num, text))
-            out.truncate(0)
-            out.seek(0)
-        else:
-            logging.debug('Quit extractor')
-            break
+    if broken_pipe_event.is_set():
+        output_queue.cancel_join_thread()
+
     out.close()
 
 
 report_period = 10000           # progress report period
+
+
 def reduce_process(opts, output_queue, spool_length,
-                   out_file=None, file_size=0, file_compress=True):
+                   out_file, file_size, file_compress, broken_pipe_event):
     """Pull finished article text, write series of files (or stdout)
     :param opts: global parameters.
     :param output_queue: text to be output.
@@ -3076,45 +3070,56 @@ def reduce_process(opts, output_queue, spool_length,
 
     createLogger(options.quiet, options.debug)
 
-    if (out_file and (not options.write_raw_text)):
+    if out_file and not options.write_raw_text:
         nextFile = NextFile(out_file)
         output = OutputSplitter(nextFile, file_size, file_compress)
     else:
-        output = sys.stdout if PY2 else sys.stdout.buffer
+        sys.stdout.buffer
         if file_compress:
-            logging.warn("writing to stdout, so no output compression (use an external tool)")
+            logging.warning("writing to stdout, so no output compression (use an external tool)")
 
     interval_start = default_timer()
     # FIXME: use a heap
     spool = {}        # collected pages
     next_page = 0     # sequence numbering of page
-    while True:
-        if next_page in spool:
-            output.write(spool.pop(next_page).encode('utf-8'))
-            next_page += 1
-            # tell mapper our load:
-            spool_length.value = len(spool)
-            # progress report
-            if next_page % report_period == 0:
-                interval_rate = report_period / (default_timer() - interval_start)
-                logging.info("Extracted %d articles (%.1f art/s)",
-                             next_page, interval_rate)
-                interval_start = default_timer()
-        else:
-            # mapper puts None to signal finish
-            pair = output_queue.get()
-            if not pair:
-                break
-            page_num, text = pair
-            spool[page_num] = text
-            # tell mapper our load:
-            spool_length.value = len(spool)
-            # FIXME: if an extractor dies, process stalls; the other processes
-            # continue to produce pairs, filling up memory.
-            if len(spool) > 200:
-                logging.debug('Collected %d, waiting: %d, %d', len(spool),
-                              next_page, next_page == page_num)
-    if output != sys.stdout:
+    try:
+        while True:
+            if next_page in spool:
+                try:
+                    output.write(spool.pop(next_page).encode('utf-8'))
+                except BrokenPipeError:
+                    # other side of pipe (like `head` or `grep`) is closed
+                    # we can simply exit
+                    broken_pipe_event.set()
+                    break
+
+                next_page += 1
+                # tell mapper our load:
+                spool_length.value = len(spool)
+                # progress report
+                if next_page % report_period == 0:
+                    interval_rate = report_period / (default_timer() - interval_start)
+                    logging.info("Extracted %d articles (%.1f art/s)",
+                                 next_page, interval_rate)
+                    interval_start = default_timer()
+            else:
+                # mapper puts None to signal finish
+                pair = output_queue.get()
+                if not pair:
+                    break
+                page_num, text = pair
+                spool[page_num] = text
+                # tell mapper our load:
+                spool_length.value = len(spool)
+                # FIXME: if an extractor dies, process stalls; the other processes
+                # continue to produce pairs, filling up memory.
+                if len(spool) > 200:
+                    logging.debug('Collected %d, waiting: %d, %d', len(spool),
+                                  next_page, next_page == page_num)
+    except KeyboardInterrupt:
+        pass
+
+    if output != sys.stdout and not broken_pipe_event.is_set():
         output.close()
 
 
@@ -3122,6 +3127,7 @@ def reduce_process(opts, output_queue, spool_length,
 
 # Minimum size of output files
 minFileSize = 200 * 1024
+
 
 def main():
 
@@ -3274,12 +3280,14 @@ def main():
     process_dump(input_file, args.templates, output_path, file_size,
                  args.compress, args.processes)
 
+
 def createLogger(quiet, debug):
     logger = logging.getLogger()
     if not quiet:
         logger.setLevel(logging.INFO)
     if debug:
         logger.setLevel(logging.DEBUG)
+
 
 if __name__ == '__main__':
     main()

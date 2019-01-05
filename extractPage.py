@@ -27,15 +27,11 @@
 Extracts a single page from a Wikipedia dump file.
 """
 
-import sys, os.path
-import re, random
+import sys
+import os.path
+import re
 import argparse
-from itertools import izip
-import logging, traceback
-import urllib
-import bz2, gzip
-from htmlentitydefs import name2codepoint
-import Queue, threading, multiprocessing
+import bz2
 
 
 # Program version
@@ -45,8 +41,7 @@ version = '2.9'
 # READER
 
 tagRE = re.compile(r'(.*?)<(/?\w+)[^>]*>(?:([^<]*)(<.*?>)?)?')
-#tagRE = re.compile(r'(.*?)<(/?\w+)[^>]*>([^<]*)')
-#                    1     2            3
+
 
 def process_data(input_file, ids, templates=False):
     """
@@ -61,7 +56,7 @@ def process_data(input_file, ids, templates=False):
         opener = open
 
     input = opener(input_file)
-    print '<mediawiki>'
+    print('<mediawiki>')
 
     rang = ids.split('-')
     first = int(rang[0])
@@ -69,7 +64,7 @@ def process_data(input_file, ids, templates=False):
         last = first
     else:
         last = int(rang[1])
-    page = []
+    page = list()
     curid = 0
     for line in input:
         line = line.decode('utf-8')
@@ -82,7 +77,7 @@ def process_data(input_file, ids, templates=False):
             continue
         tag = m.group(2)
         if tag == 'page':
-            page = []
+            page = list()
             page.append(line)
             inArticle = False
         elif tag == 'id' and not curid: # other <id> are present
@@ -93,27 +88,27 @@ def process_data(input_file, ids, templates=False):
             elif curid > last and not templates:
                 break
             elif not inArticle and not templates:
-                page = []
+                page = list()
         elif tag == 'title':
             if templates:
                 if m.group(3).startswith('Template:'):
                     page.append(line)
                 else:
-                    page = []
+                    page = list()
             else:
                 page.append(line)
         elif tag == '/page':
             if page:
                 page.append(line)
-                print ''.join(page).encode('utf-8')
+                print(''.join(page).encode('utf-8'))
                 if not templates and curid == last:
                     break
             curid = 0
-            page = []
+            page = list()
         elif page:
             page.append(line)
 
-    print '</mediawiki>'
+    print('</mediawiki>')
     input.close()
 
 def main():
